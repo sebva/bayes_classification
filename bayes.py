@@ -7,39 +7,24 @@ from os.path import isfile, join
 import math
 import random
 
-
-def random_subset( iterator, K ):
-    ''' From : http://stackoverflow.com/a/2612822 '''
-    result = []
-    N = 0
-
-    for item in iterator:
-        N += 1
-        if len( result ) < K:
-            result.append( item )
-        else:
-            s = int(random.random() * N)
-            if s < K:
-                result[ s ] = item
-
-    return result
-
 class Bayes:
-    def __init__(self, type1, type2, training_ratio=0.8):
+    def __init__(self, type1, type2):
         self.type1 = type1
         self.type2 = type2
-        self.training_ratio = training_ratio
         self.probs = {}
         self.nbarticles = {}
         self.nbwords = {}
 
-    def train(self, folder, type_index):
+    def train(self, training_files, type_index):
         type = self.type1 if type_index == 1 else self.type2
 
-        allfiles = [join(folder, f) for f in listdir(folder) if isfile(join(folder, f))]
-        training_files = random_subset(allfiles, int(self.training_ratio * len(allfiles)))
         # FIXME: Texts are unicode, but some characters aren't, so open() crashes
-        words_unfiltered = [line.split("\t") for line in [fd.readline() for fd in [open(file, 'r', encoding='ISO-8859-1') for file in training_files]]]
+        files_lines = [fd.readlines() for fd in [open(file, 'r', encoding='ISO-8859-1') for file in training_files]]
+        words_unfiltered = []
+        for file_lines in files_lines:
+            for line in file_lines:
+                words_unfiltered.append(line.split("\t"))
+
         words = self.filter_words(words_unfiltered)
 
         wordcount = {}
@@ -69,20 +54,25 @@ class Bayes:
                 wordcount[word] = 1
 
         p_1 = self.nbarticles[self.type1] / float(self.nbarticles[self.type1] + self.nbarticles[self.type2])
-        p_2 = 1.0 - p_1
+        p_2 = math.log(1.0 - p_1)
+        p_1 = math.log(p_1)
+
+        nb_different_words = len(set(self.probs[self.type1].keys()).union(set(self.probs[self.type2].keys())))
+        empty_prob_type1 = 1.0 / float(self.nbwords[self.type1] + nb_different_words)
+        empty_prob_type2 = 1.0 / float(self.nbwords[self.type2] + nb_different_words)
 
         for word in wordcount:
             try:
                 l_prob_word_1 = self.probs[self.type1][word]
             except KeyError:
-                l_prob_word_1 = 1.0 / float(self.nbwords[self.type1])
+                l_prob_word_1 = empty_prob_type1
             try:
                 l_prob_word_2 = self.probs[self.type2][word]
             except KeyError:
-                l_prob_word_2 = 1.0 / float(self.nbwords[self.type2])
+                l_prob_word_2 = empty_prob_type2
 
-            p_1 *= math.log(pow(l_prob_word_1, wordcount[word]))
-            p_2 *= math.log(pow(l_prob_word_2, wordcount[word]))
+            p_1 += math.log(pow(l_prob_word_1, wordcount[word]))
+            p_2 += math.log(pow(l_prob_word_2, wordcount[word]))
 
         return self.type1 if p_1 > p_2 else self.type2
 
@@ -92,7 +82,7 @@ class Bayes:
         toret = []
         for word in words:
             try:
-                if word[1] == 'NOM' or word[1] == 'ADJ' or word[1].startswith('VRB'):
+                if word[1] == 'NOM' or word[1] == 'ADJ' or word[1].startswith('VER'):
                     toret.append(word[2].rstrip())
             except IndexError:
                 pass
@@ -116,16 +106,23 @@ class Bayes:
 
 if __name__ == '__main__':
     b = Bayes('pos', 'neg')
-    b.train(sys.argv[1], 1)
-    b.train(sys.argv[2], 2)
 
-    folder_pos = sys.argv[2]
-    allfiles = [join(folder_pos, f) for f in listdir(folder_pos) if isfile(join(folder_pos, f))]
-    test_files_pos = random_subset(allfiles, int(0.2 * len(allfiles)))
+    training_ratio = 0.8
 
+    folder_pos = sys.argv[1]
     folder_neg = sys.argv[2]
-    allfiles = [join(folder_neg, f) for f in listdir(folder_neg) if isfile(join(folder_neg, f))]
-    test_files_neg = random_subset(allfiles, int(0.2 * len(allfiles)))
+
+    pos_files = [join(folder_pos, f) for f in listdir(folder_pos) if isfile(join(folder_pos, f))]
+    neg_files = [join(folder_neg, f) for f in listdir(folder_neg) if isfile(join(folder_neg, f))]
+
+    random.shuffle(pos_files)
+    random.shuffle(neg_files)
+
+    b.train(pos_files[:int(len(pos_files) * training_ratio)], 1)
+    b.train(neg_files[:int(len(neg_files) * training_ratio)], 2)
+
+    test_files_pos = pos_files[int(len(pos_files) * (1.0 - training_ratio)):]
+    test_files_neg = neg_files[int(len(neg_files) * (1.0 - training_ratio)):]
 
     result = b.test_algorithm(test_files_pos, test_files_neg)
-    print("Percentage of successful classifications: %s%%" % result)
+    print("Percentage of successful classifications: %f%%" % result)
