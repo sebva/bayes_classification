@@ -1,7 +1,5 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-
-import sys
 from os import listdir
 from os.path import isfile, join
 import math
@@ -9,14 +7,16 @@ import random
 
 
 class Bayes:
-    def __init__(self, type1, type2):
+    def __init__(self, type1, type2, is_tagged):
         self.type1 = type1
         self.type2 = type2
+        self.is_tagged = is_tagged
         self.probs = {}
         self.nbarticles = {}
         self.nbwords = {}
+        self.nb_different_words = -1
 
-    def train(self, training_files, type_index, is_tagged=True):
+    def train(self, training_files, type_index):
         current_type = self.type1 if type_index == 1 else self.type2
 
         files_lines = [fd.readlines() for fd in [open(file, 'r', encoding='UTF-8') for file in training_files]]
@@ -24,14 +24,14 @@ class Bayes:
 
         for file_lines in files_lines:
             for line in file_lines:
-                if is_tagged:
+                if self.is_tagged:
                     words_unfiltered.append(line.split("\t"))
                 else:
                     for word in line.split(' '):
                         if len(word) >= 2:
                             words_unfiltered.append(word.rstrip())
 
-        if is_tagged:
+        if self.is_tagged:
             words = self.filter_words(words_unfiltered)
         else:
             words = words_unfiltered
@@ -50,18 +50,18 @@ class Bayes:
         for word in wordcount:
             self.probs[current_type][word] = (wordcount[word] + 1) / float(len(words) + len(wordcount))
 
-    def classify(self, filepath, is_tagged=True):
+    def classify(self, filepath):
         """
 
         :param filepath:string
         :return:string
         """
-        if is_tagged:
+        if self.is_tagged:
             words_unfiltered = [line.split("\t") for line in open(filepath, 'r', encoding='UTF-8')]
         else:
             words_unfiltered = [line.rstrip().split(' ') for line in open(filepath, 'r', encoding='UTF-8')][0]
 
-        if is_tagged:
+        if self.is_tagged:
             words = self.filter_words(words_unfiltered)
         else:
             words = words_unfiltered
@@ -78,7 +78,7 @@ class Bayes:
         p_1 = math.log(p_1)
 
         # Counts different words from both sets, counting every same word once
-        nb_different_words = len(set(self.probs[self.type1].keys()).union(set(self.probs[self.type2].keys())))
+        nb_different_words = self.size_bayesian_network()
         empty_prob_type1 = 1.0 / float(self.nbwords[self.type1] + nb_different_words)
         empty_prob_type2 = 1.0 / float(self.nbwords[self.type2] + nb_different_words)
 
@@ -96,6 +96,12 @@ class Bayes:
             p_2 += math.log(pow(l_prob_word_2, wordcount[word]))
 
         return self.type1 if p_1 > p_2 else self.type2
+
+    def size_bayesian_network(self):
+        if self.nb_different_words == -1:
+            self.nb_different_words = len(set(self.probs[self.type1].keys()).union(set(self.probs[self.type2].keys())))
+
+        return self.nb_different_words
 
     @staticmethod
     def filter_words(words):
@@ -115,42 +121,79 @@ class Bayes:
 
         return toret
 
-    def test_algorithm(self, files_type1, files_type2, is_tagged=True):
-        total_files = len(files_type1) + len(files_type2)
+    def test_algorithm(self, files_type1, files_type2):
         correct_guesses_type1 = 0
         correct_guesses_type2 = 0
         for file_type1 in files_type1:
-            if self.classify(file_type1, is_tagged) == self.type1:
+            if self.classify(file_type1) == self.type1:
                 correct_guesses_type1 += 1
 
         for file_type2 in files_type2:
-            if self.classify(file_type2, is_tagged) == self.type2:
+            if self.classify(file_type2) == self.type2:
                 correct_guesses_type2 += 1
 
-        return (correct_guesses_type1 + correct_guesses_type2) / float(total_files) * 100.0
+        return correct_guesses_type1 / len(files_type1) * 100.0, correct_guesses_type2 / len(files_type2) * 100.0
 
+    @staticmethod
+    def cross_validate(files_type1, files_type2, k_divisions, is_tagged):
+        total_results = [0, 0]
+
+        chunk_size1 = int(len(files_type1) / k_divisions)
+        corpuses_type1 = [files_type1[i:i + chunk_size1] for i in range(0, len(files_type1), chunk_size1)]
+        chunk_size2 = int(len(files_type2) / k_divisions)
+        corpuses_type2 = [files_type2[i:i + chunk_size2] for i in range(0, len(files_type2), chunk_size2)]
+
+        # i = index of the test corpus
+        for i in range(k_divisions):
+            b = Bayes('pos', 'neg', is_tagged)
+
+            for j in range(k_divisions):
+                if j != i:
+                    b.train(corpuses_type1[j], 1)
+                    b.train(corpuses_type2[j], 2)
+
+            res = b.test_algorithm(corpuses_type1[i], corpuses_type2[i])
+            total_results[0] += res[0]
+            total_results[1] += res[1]
+
+        return [total_result / k_divisions for total_result in total_results]
 
 if __name__ == '__main__':
-    b = Bayes('pos', 'neg')
+    import argparse
 
-    training_ratio = 0.8
+    parser = argparse.ArgumentParser(description='Bayesian classifier by Sébastien Vaucher and Jason Racine')
+    parser.add_argument('folder_pos', default=None, help='Folder containing positive articles')
+    parser.add_argument('folder_neg', default=None, help='Folder containing negative articles')
+    parser.add_argument('-t', '--tagged', default=False, action='store_true',
+                        help='Tell the program that the articles are already tagged')
+    parser.add_argument('-c', '--cross', default=False, action='store_true',
+                        help='Perform K cross validation on the algorithm')
+    parser.add_argument('-k', '--k-divisions', type=int, default=10,
+                        help='Number of divisions for K-cross-validation')
+    parser.add_argument('-r', '--training-ratio', type=float, default=0.8,
+                        help='Ratio of articles used in the training phase')
 
-    folder_pos = sys.argv[1]
-    folder_neg = sys.argv[2]
+    args = parser.parse_args()
 
-    is_tagged = True if len(sys.argv) > 3 and sys.argv[3] == 'tagged' else False
-
-    pos_files = [join(folder_pos, f) for f in listdir(folder_pos) if isfile(join(folder_pos, f))]
-    neg_files = [join(folder_neg, f) for f in listdir(folder_neg) if isfile(join(folder_neg, f))]
+    pos_files = [join(args.folder_pos, f) for f in listdir(args.folder_pos) if isfile(join(args.folder_pos, f))]
+    neg_files = [join(args.folder_neg, f) for f in listdir(args.folder_neg) if isfile(join(args.folder_neg, f))]
 
     random.shuffle(pos_files)
     random.shuffle(neg_files)
 
-    b.train(pos_files[:int(len(pos_files) * training_ratio)], 1, is_tagged)
-    b.train(neg_files[:int(len(neg_files) * training_ratio)], 2, is_tagged)
+    if args.cross:
+        result = Bayes.cross_validate(pos_files, neg_files, args.k_divisions, args.tagged)
+    else:
+        b = Bayes('pos', 'neg', args.tagged)
+        b.train(pos_files[:int(len(pos_files) * args.training_ratio)], 1)
+        b.train(neg_files[:int(len(neg_files) * args.training_ratio)], 2)
 
-    test_files_pos = pos_files[int(len(pos_files) * training_ratio):]
-    test_files_neg = neg_files[int(len(neg_files) * training_ratio):]
+        print("Bayesian network size: %d" % b.size_bayesian_network())
 
-    result = b.test_algorithm(test_files_pos, test_files_neg, is_tagged)
-    print("Percentage of successful classifications: %f%%" % result)
+        test_files_pos = pos_files[int(len(pos_files) * args.training_ratio):]
+        test_files_neg = neg_files[int(len(neg_files) * args.training_ratio):]
+
+        result = b.test_algorithm(test_files_pos, test_files_neg)
+
+    print("Percentage of successful classifications (pos): %.1f%%" % result[0])
+    print("Percentage of successful classifications (neg): %.1f%%" % result[1])
